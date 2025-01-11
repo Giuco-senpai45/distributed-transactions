@@ -1,0 +1,31 @@
+services:
+  dt-pg:
+    container_name: dt-pg
+    image: postgres
+    restart: always
+    env_file:
+      - ./postgres/.env
+    ports:
+      - '5555:5432'
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+
+  dt-server:
+    container_name: dt-server
+    ports:
+      - "8080:8080"
+    build:
+      context: ../server
+      dockerfile: Dockerfile
+    restart: always
+    depends_on:
+      - dt-pg
+    env_file:
+      - ./server/.env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+volumes:
+  pg-data:

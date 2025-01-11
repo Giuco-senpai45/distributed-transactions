@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_audit_version;
+DROP SEQUENCE IF EXISTS audit_id_seq;
+DROP TABLE IF EXISTS audit;

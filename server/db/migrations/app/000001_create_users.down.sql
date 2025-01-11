@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS idx_users_version;
+DROP SEQUENCE IF EXISTS users_id_seq;
+DROP TABLE IF EXISTS users;
