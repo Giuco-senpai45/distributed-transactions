@@ -18,20 +18,20 @@ func NewAuditController(service *services.AuditService) *AuditController {
 	return &AuditController{service: service}
 }
 
-func (c *AuditController) GetAudit(w http.ResponseWriter, r *http.Request) {
-	auditID, err := strconv.Atoi(r.URL.Query().Get("audit_id"))
+func (c *AuditController) GetAudits(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
-		http.Error(w, "Invalid audit ID", http.StatusBadRequest)
+		http.Error(w, "Invalid user ID", http.StatusBadRequest)
 		return
 	}
 
-	audit, err := c.service.GetAudit(context.Background(), auditID)
+	audits, err := c.service.GetAudits(r.Context(), userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	utils.WriteJSON(w, http.StatusOK, audit)
+	utils.WriteJSON(w, http.StatusOK, audits)
 }
 
 func (c *AuditController) CreateAudit(w http.ResponseWriter, r *http.Request) {

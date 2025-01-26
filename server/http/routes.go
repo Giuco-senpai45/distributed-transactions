@@ -18,7 +18,7 @@ func RegisterRoutes(router *http.ServeMux, userController *controllers.UserContr
 	router.HandleFunc("PATCH /accounts", accountController.Deposit)
 	router.HandleFunc("POST /accounts/transfer", accountController.Transfer)
 
-	router.HandleFunc("GET /audits", auditController.GetAudit)
+	router.HandleFunc("GET /audits/{id}", auditController.GetAudits)
 	router.HandleFunc("POST /audits", auditController.CreateAudit)
 
 	router.HandleFunc("POST /vacuum", func(w http.ResponseWriter, r *http.Request) {

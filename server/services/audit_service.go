@@ -15,30 +15,41 @@ func NewAuditService(mvccService *MVCCService) *AuditService {
 	return &AuditService{mvccService: mvccService}
 }
 
-func (as *AuditService) GetAudit(ctx context.Context, auditID int) (*models.Audit, error) {
+func (as *AuditService) GetAudits(ctx context.Context, userID int) ([]*models.Audit, error) {
 	tx, err := as.mvccService.OpenTx(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open transaction: %v", err)
 	}
 	defer tx.Rollback()
 
-	results, err := tx.Where("audits", "id", auditID)
-	if err != nil || len(results) == 0 {
-		return nil, fmt.Errorf("audit not found")
+	results, err := tx.SelectByColumn("audit", "user_id", userID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch audits: %v", err)
 	}
 
-	audit := &models.Audit{
-		ID:        int(results[0]["id"].(int64)),
-		Timestamp: results[0]["timestamp"].(time.Time),
-		Operation: results[0]["operation"].(string),
-		UserID:    int(results[0]["user_id"].(int64)),
+	audits := make([]*models.Audit, 0, len(results))
+	for _, result := range results {
+		var timestamp time.Time
+		if ts, ok := result["timestamp"].(time.Time); ok {
+			timestamp = ts
+		} else {
+			timestamp = time.Now()
+		}
+
+		audit := &models.Audit{
+			ID:        int(result["id"].(int64)),
+			Timestamp: timestamp,
+			Operation: result["operation"].(string),
+			UserID:    int(result["user_id"].(int64)),
+		}
+		audits = append(audits, audit)
 	}
 
 	if err = tx.Commit(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to commit: %v", err)
 	}
 
-	return audit, nil
+	return audits, nil
 }
 
 func (as *AuditService) CreateAudit(ctx context.Context, audit *models.Audit) error {
@@ -48,7 +59,7 @@ func (as *AuditService) CreateAudit(ctx context.Context, audit *models.Audit) er
 		return err
 	}
 
-	_, err = tx.Insert("audits", []string{"operation", "user_id", "timestamp"}, audit.Operation, audit.UserID, time.Now())
+	_, err = tx.Insert("audit", []string{"operation", "user_id", "timestamp"}, audit.Operation, audit.UserID, time.Now())
 	if err != nil {
 		tx.Rollback()
 		return err

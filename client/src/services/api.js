@@ -128,24 +128,15 @@ export const accountService = {
 }
 
 export const auditService = {
-  async getAudit(auditId) {
-    const response = await fetch(`${API_URL}/audits?audit_id=${auditId}`)
-    if (!response.ok) {
-      throw new Error('Failed to fetch audit log')
-    }
-    return response.json()
-  },
-
-  async createAudit(auditData) {
-    const response = await fetch(`${API_URL}/audits`, {
-      method: 'POST',
+  async getAuditsByUser(userId) {
+    const response = await fetch(`${API_URL}/audits/${userId}`, {
+      method: 'GET',
       headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(auditData),
+        'Content-Type': 'application/json'
+      }
     })
     if (!response.ok) {
-      throw new Error('Failed to create audit log')
+      throw new Error('Failed to fetch audit logs')
     }
     return response.json()
   }

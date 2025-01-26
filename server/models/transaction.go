@@ -93,6 +93,57 @@ func (tx *Transaction) IsRowVisible(row *RecordData) bool {
 	return true
 }
 
+func (tx *Transaction) SelectByColumn(table string, column string, value any) ([]map[string]interface{}, error) {
+	query := fmt.Sprintf(`SELECT * FROM %s WHERE %s = $1`, table, column)
+
+	log.Info("%v", query)
+	log.Debug("Executing query: %s with args: [%v, %v]", query, tx.ID, value)
+
+	rows, err := appConn.QueryContext(tx.ctx, query, value)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	log.Debug("Query executed successfully, returned")
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		row := make([]interface{}, len(cols))
+		for i := range row {
+			row[i] = new(interface{})
+		}
+
+		err := rows.Scan(row...)
+		if err != nil {
+			return nil, err
+		}
+
+		result := make(map[string]interface{})
+		for i, col := range cols[6:] {
+			sv := reflect.Indirect(reflect.ValueOf(row[i+6])).Elem()
+			switch sv.Kind() {
+			case reflect.Int64:
+				result[col] = sv.Int()
+			case reflect.Bool:
+				result[col] = sv.Bool()
+			case reflect.String:
+				result[col] = sv.String()
+			default:
+				log.Error("Unknown type: %v", sv.Kind())
+			}
+		}
+		results = append(results, result)
+	}
+
+	log.Debug("Query returned %d results", len(results))
+	return results, nil
+}
+
 // select specified record from table, check visibility and return record data
 func (tx *Transaction) selectRecord(table string, id int, data ...any) (*RecordData, error) {
 	rows, err := appConn.QueryContext(tx.ctx, "SELECT * FROM "+table+" WHERE id = $1", id)
