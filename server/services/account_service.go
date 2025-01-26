@@ -17,6 +17,11 @@ type AccountService struct {
 	mvccService *MVCCService
 }
 
+type TransferResult struct {
+	FromAccount *Account `json:"from_account"`
+	ToAccount   *Account `json:"to_account"`
+}
+
 func NewAccountService(mvccService *MVCCService) *AccountService {
 	return &AccountService{mvccService: mvccService}
 }
@@ -35,14 +40,23 @@ func (as *AccountService) ListAccounts(ctx context.Context, userID int) (*[]Acco
 		return nil, err
 	}
 
-	// Map results to Account structs
+	log.Debug("Raw query results: %+v", results)
+
 	accounts := make([]Account, 0, len(results))
 	for _, result := range results {
-		account := Account{
-			ID:      int(result["id"].(int64)),
-			UserID:  int(result["user_id"].(int64)),
-			Balance: int(result["balance"].(int64)),
+		log.Debug("Processing result: %+v", result)
+
+		var account Account
+		account.ID = int(result["id"].(int64))
+		account.UserID = int(result["user_id"].(int64))
+
+		if bal, ok := result["balance"].(int64); ok {
+			account.Balance = int(bal)
+		} else {
+			log.Error("Invalid balance type: %T", result["balance"])
+			account.Balance = 0
 		}
+
 		accounts = append(accounts, account)
 	}
 
@@ -121,71 +135,88 @@ func (as *AccountService) Deposit(ctx context.Context, accountID, amount int) (*
 	return &acc, nil
 }
 
-func (as *AccountService) Transfer(ctx context.Context, fromAccountID, toAccountID, amount int) (*Account, error) {
-	tx, err := as.mvccService.OpenTx(ctx)
+func (as *AccountService) Transfer(ctx context.Context, fromAccountID, toAccountID, amount int) (*TransferResult, error) {
+	// First transaction - deduct from source
+	tx1, err := as.mvccService.OpenTx(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tx1 open failed: %v", err)
 	}
-	defer tx.Rollback()
+	defer tx1.Rollback()
 
-	// Get source account
-	fromAccounts, err := tx.Where("accounts", "id", fromAccountID)
+	fromAccounts, err := tx1.Where("accounts", "id", fromAccountID)
 	if err != nil || len(fromAccounts) == 0 {
 		return nil, fmt.Errorf("source account not found")
 	}
 
-	// Get destination account
-	toAccounts, err := tx.Where("accounts", "id", toAccountID)
-	if err != nil || len(toAccounts) == 0 {
-		return nil, fmt.Errorf("destination account not found")
-	}
-
-	// Setup source account
 	fromAcc := Account{
 		ID:      fromAccountID,
 		UserID:  int(fromAccounts[0]["user_id"].(int64)),
 		Balance: int(fromAccounts[0]["balance"].(int64)),
 	}
 
-	// Setup destination account
+	if fromAcc.Balance < amount {
+		return nil, fmt.Errorf("insufficient balance")
+	}
+
+	if err = tx1.Update("accounts", fromAccountID,
+		[]string{"balance", "user_id"},
+		fromAcc.Balance-amount, fromAcc.UserID); err != nil {
+		return nil, fmt.Errorf("source update failed: %v", err)
+	}
+
+	if err = tx1.Commit(); err != nil {
+		return nil, fmt.Errorf("tx1 commit failed: %v", err)
+	}
+
+	// Second transaction - add to destination
+	tx2, err := as.mvccService.OpenTx(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("tx2 open failed: %v", err)
+	}
+	defer tx2.Rollback()
+
+	toAccounts, err := tx2.Where("accounts", "id", toAccountID)
+	if err != nil || len(toAccounts) == 0 {
+		return nil, fmt.Errorf("destination account not found")
+	}
+
 	toAcc := Account{
 		ID:      toAccountID,
 		UserID:  int(toAccounts[0]["user_id"].(int64)),
 		Balance: int(toAccounts[0]["balance"].(int64)),
 	}
 
-	// Check sufficient balance
-	if fromAcc.Balance < amount {
-		return nil, fmt.Errorf("insufficient balance")
-	}
-
-	// Update source account
-	err = tx.Update("accounts", fromAccountID,
+	if err = tx2.Update("accounts", toAccountID,
 		[]string{"balance", "user_id"},
-		fromAcc.Balance-amount, fromAcc.UserID)
-	if err != nil {
-		return nil, err
+		toAcc.Balance+amount, toAcc.UserID); err != nil {
+		return nil, fmt.Errorf("destination update failed: %v", err)
 	}
 
-	// Update destination account
-	err = tx.Update("accounts", toAccountID,
-		[]string{"balance", "user_id"},
-		toAcc.Balance+amount, toAcc.UserID)
-	if err != nil {
-		return nil, err
+	if err = tx2.Commit(); err != nil {
+		return nil, fmt.Errorf("tx2 commit failed: %v", err)
 	}
 
-	// Create audit entry
-	_, err = tx.Insert("audit", []string{"timestamp", "operation", "user_id"},
-		time.Now(), "transfer", fromAcc.UserID)
+	// Third transaction - audit entry
+	tx3, err := as.mvccService.OpenTx(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("tx3 open failed: %v", err)
+	}
+	defer tx3.Rollback()
+
+	if _, err = tx3.Insert("audit", []string{"timestamp", "operation", "user_id"},
+		time.Now(), "transfer", fromAcc.UserID); err != nil {
+		return nil, fmt.Errorf("audit creation failed: %v", err)
 	}
 
-	if err = tx.Commit(); err != nil {
-		return nil, err
+	if err = tx3.Commit(); err != nil {
+		return nil, fmt.Errorf("tx3 commit failed: %v", err)
 	}
 
 	fromAcc.Balance -= amount
-	return &fromAcc, nil
+	toAcc.Balance += amount
+
+	return &TransferResult{
+		FromAccount: &fromAcc,
+		ToAccount:   &toAcc,
+	}, nil
 }

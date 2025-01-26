@@ -12,33 +12,41 @@ export const userService = {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(userData),
+      body: JSON.stringify({ username: userData.username }),
     })
-    return response.json()
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    return await response.json()
   },
 
   async login(username) {
     const response = await fetch(`${API_URL}/users/login`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ username }),
+      body: JSON.stringify({ username })
     })
+
     if (!response.ok) {
       throw new Error('Login failed')
     }
+
     const user = await response.json()
     localStorage.setItem('user', JSON.stringify(user))
     return user
   },
 
-  async logout() {
-    localStorage.removeItem('user')
-  },
-
   async listUsers() {
-    const response = await fetch(`${API_URL}/users/list`)
+    const response = await fetch(`${API_URL}/users`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    })
     if (!response.ok) {
       throw new Error('Failed to fetch users')
     }
@@ -46,14 +54,18 @@ export const userService = {
   },
 
   getCurrentUser() {
-    const user = localStorage.getItem('user')
-    return user ? JSON.parse(user) : null
-  }
+    const userStr = localStorage.getItem('user')
+    return userStr ? JSON.parse(userStr) : null
+  },
+
+  async logout() {
+    localStorage.removeItem('user')
+  },
 }
 
 export const accountService = {
   async listAccounts(userId) {
-    const response = await fetch(`${API_URL}/accounts?user_id=${userId}`)
+    const response = await fetch(`${API_URL}/accounts/${userId}`)
     return response.json()
   },
 
@@ -69,6 +81,8 @@ export const accountService = {
   },
 
   async deposit(accountData) {
+    console.log(accountData);
+
     const response = await fetch(`${API_URL}/accounts`, {
       method: 'PATCH',
       headers: {
@@ -77,6 +91,39 @@ export const accountService = {
       body: JSON.stringify(accountData),
     })
     return response.json()
+  },
+
+  async transfer(transferData) {
+    try {
+      console.log('Starting transfer:', transferData)
+      const response = await fetch(`${API_URL}/accounts/transfer`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from_account_id: transferData.from_account_id,
+          to_account_id: transferData.to_account_id,
+          amount: transferData.amount
+        })
+      })
+
+      const responseText = await response.text()
+      console.log('Transfer response:', responseText)
+
+      if (!response.ok) {
+        throw new Error(responseText || 'Transfer failed')
+      }
+
+      try {
+        return JSON.parse(responseText)
+      } catch {
+        return { success: true }
+      }
+    } catch (err) {
+      console.error('Transfer error details:', err)
+      throw new Error(err.message || 'Transfer failed')
+    }
   }
 }
 

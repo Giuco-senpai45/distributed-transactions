@@ -31,7 +31,7 @@ type Transaction struct {
 
 var mu sync.Mutex
 
-const operationDelay = 800 * time.Millisecond
+const operationDelay = 300 * time.Millisecond
 
 // fetches transaction data
 func GetTx(ctx context.Context, txID int) (*TransactionData, error) {
@@ -146,7 +146,7 @@ func (tx *Transaction) selectRecord(table string, id int, data ...any) (*RecordD
 func (tx *Transaction) Where(table string, where string, args ...any) ([]map[string]interface{}, error) {
 	baseQuery := `
         WITH latest_versions AS (
-            SELECT DISTINCT ON (id) *
+            SELECT *
             FROM ` + table
 
 	if where != "" {
@@ -220,7 +220,16 @@ func (tx *Transaction) Where(table string, where string, args ...any) ([]map[str
 			result := make(map[string]interface{})
 			for i, col := range cols[6:] {
 				sv := reflect.Indirect(reflect.ValueOf(row[i+6])).Elem()
-				result[col] = sv.Interface()
+				switch sv.Kind() {
+				case reflect.Int64:
+					result[col] = sv.Int()
+				case reflect.Bool:
+					result[col] = sv.Bool()
+				case reflect.String:
+					result[col] = sv.String()
+				default:
+					log.Error("Unknown type: %v", sv.Kind())
+				}
 			}
 			results = append(results, result)
 		}
@@ -302,6 +311,10 @@ func (tx *Transaction) Insert(table string, fields []string, values ...any) (int
 }
 
 func (tx *Transaction) Update(table string, id int, fields []string, values ...any) error {
+	if tx.Status != TxActive {
+		return fmt.Errorf("transaction %d is not active", tx.ID)
+	}
+
 	time.Sleep(operationDelay)
 
 	if err := tx.acquireLock(table, id, WriteLock); err != nil {
@@ -435,9 +448,13 @@ func (tx *Transaction) Delete(table string, id int) error {
 
 func (tx *Transaction) Commit() error {
 	defer func() {
-		mvccConn.ExecContext(tx.ctx,
+		log.Debug("Deleting locks for transaction %d", tx.ID)
+		_, err := mvccConn.ExecContext(tx.ctx,
 			"DELETE FROM locks WHERE txid = $1",
 			tx.ID)
+		if err != nil {
+			log.Error("Failed to delete locks: %v", err)
+		}
 	}()
 	log.Info("Starting commit for transaction %d", tx.ID)
 
@@ -620,6 +637,10 @@ func Vacuum(ctx context.Context) (int, error) {
 	}
 
 	return delCount, nil
+}
+
+func (tx *Transaction) AcquireLock(table string, id int, lockType LockType) error {
+	return tx.acquireLock(table, id, lockType)
 }
 
 func getTables(conn *sql.DB) ([]string, error) {

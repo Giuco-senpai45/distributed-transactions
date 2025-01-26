@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { RouterLink, RouterView, useRouter } from 'vue-router'
 import { userService } from '@/services/api'
 
@@ -10,6 +10,10 @@ const logout = async () => {
   await userService.logout()
   router.push('/login')
 }
+
+watch(() => router.currentRoute.value, () => {
+  currentUser.value = userService.getCurrentUser()
+})
 
 onMounted(() => {
   currentUser.value = userService.getCurrentUser()
@@ -23,10 +27,7 @@ onMounted(() => {
     <div class="wrapper">
       <nav v-if="currentUser">
         <RouterLink to="/users" class="text-white">Users</RouterLink>
-        <RouterLink to="/users/create" class="text-white">Create User</RouterLink>
         <RouterLink to="/accounts" class="text-white">Accounts</RouterLink>
-        <RouterLink to="/accounts/create" class="text-white">Create Account</RouterLink>
-        <RouterLink to="/accounts/deposit" class="text-white">Make Deposit</RouterLink>
         <RouterLink to="/audits" class="text-white">Audit Logs</RouterLink>
         <a href="#" @click.prevent="logout" class="text-white">Logout</a>
       </nav>

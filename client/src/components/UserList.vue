@@ -7,14 +7,25 @@ const selectedUser = ref(null)
 const accounts = ref([])
 const depositAmount = ref('')
 const error = ref('')
+const loading = ref(false)
 
 const fetchUsers = async () => {
+  loading.value = true
+  error.value = ''
+
   try {
-    users.value = await userService.listUsers()
     const currentUser = userService.getCurrentUser()
+    if (!currentUser) {
+      throw new Error('Not authenticated')
+    }
+
+    users.value = await userService.listUsers()
     users.value = users.value.filter(user => user.id !== currentUser.id)
-  } catch (error) {
-    console.error('Error fetching users:', error)
+  } catch (err) {
+    console.error('Error fetching users:', err)
+    error.value = err.message || 'Failed to fetch users'
+  } finally {
+    loading.value = false
   }
 }
 
@@ -61,49 +72,54 @@ onMounted(fetchUsers)
       {{ error }}
     </div>
 
-    <!-- Users list -->
-    <div v-if="users.length" class="space-y-4">
-      <div
-        v-for="user in users"
-        :key="user.id"
-        class="p-4 bg-white border rounded cursor-pointer hover:bg-gray-50"
-        @click="selectUser(user)"
-      >
-        <h3 class="font-bold">User #{{ user.id }}</h3>
-        <p class="text-gray-600">Username: {{ user.username }}</p>
-      </div>
+    <div v-if="loading" class="text-gray-600">
+      Loading users...
     </div>
-    <p v-else class="text-gray-300">No other users found.</p>
 
-    <!-- Selected user's accounts -->
-    <div v-if="selectedUser" class="mt-8">
-      <h3 class="mb-4 text-xl font-bold text-white">
-        {{ selectedUser.username }}'s Accounts
-      </h3>
-
-      <div v-if="accounts.length" class="space-y-4">
-        <div v-for="account in accounts" :key="account.id" class="p-4 bg-white border rounded">
-          <h4 class="font-bold">Account #{{ account.id }}</h4>
-          <p class="text-gray-600">Balance: ${{ account.balance }}</p>
-
-          <!-- Deposit form -->
-          <div class="mt-4">
-            <input
-              type="number"
-              v-model="depositAmount"
-              class="px-3 py-2 mr-2 border rounded"
-              placeholder="Amount to deposit"
-            />
-            <button
-              @click="handleDeposit(account.id)"
-              class="px-4 py-2 text-white bg-blue-500 rounded hover:bg-blue-600"
-            >
-              Make Deposit
-            </button>
-          </div>
+    <div v-else class="grid gap-4 md:grid-cols-2">
+      <div v-if="users.length" class="space-y-4">
+        <div
+          v-for="user in users"
+          :key="user.id"
+          class="p-4 bg-white border rounded cursor-pointer hover:bg-gray-50"
+          @click="selectUser(user)"
+        >
+          <h3 class="font-bold">User #{{ user.id }}</h3>
+          <p class="text-gray-600">Username: {{ user.username }}</p>
         </div>
       </div>
-      <p v-else class="text-gray-300">No accounts found for this user.</p>
+      <p v-else class="text-gray-300">No other users found.</p>
+
+      <!-- Selected user's accounts -->
+      <div v-if="selectedUser" class="mt-8">
+        <h3 class="mb-4 text-xl font-bold text-white">
+          {{ selectedUser.username }}'s Accounts
+        </h3>
+
+        <div v-if="accounts.length" class="space-y-4">
+          <div v-for="account in accounts" :key="account.id" class="p-4 bg-white border rounded">
+            <h4 class="font-bold">Account #{{ account.id }}</h4>
+            <p class="text-gray-600">Balance: ${{ account.balance }}</p>
+
+            <!-- Deposit form -->
+            <div class="mt-4">
+              <input
+                type="number"
+                v-model="depositAmount"
+                class="px-3 py-2 mr-2 border rounded"
+                placeholder="Amount to deposit"
+              />
+              <button
+                @click="handleDeposit(account.id)"
+                class="px-4 py-2 text-white bg-blue-500 rounded hover:bg-blue-600"
+              >
+                Make Deposit
+              </button>
+            </div>
+          </div>
+        </div>
+        <p v-else class="text-gray-300">No accounts found for this user.</p>
+      </div>
     </div>
   </div>
 </template>

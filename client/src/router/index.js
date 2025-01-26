@@ -1,12 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import UserForm from '@/components/UserForm.vue'
 import UserList from '@/components/UserList.vue'
-import AccountList from '@/components/AccountList.vue'
-import AccountForm from '@/components/AccountForm.vue'
-import DepositForm from '@/components/DepositForm.vue'
 import AuditLog from '@/components/AuditLog.vue'
 import LoginForm from '@/components/LoginForm.vue'
 import { userService } from '@/services/api'
+import AccountDashboard from '@/components/AccountDashboard.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -29,17 +27,7 @@ const router = createRouter({
     {
       path: '/accounts',
       name: 'accounts',
-      component: AccountList
-    },
-    {
-      path: '/accounts/create',
-      name: 'createAccount',
-      component: AccountForm
-    },
-    {
-      path: '/accounts/deposit',
-      name: 'deposit',
-      component: DepositForm
+      component: AccountDashboard
     },
     {
       path: '/audits',
