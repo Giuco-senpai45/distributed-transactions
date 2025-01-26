@@ -22,7 +22,6 @@ func (us *UserService) GetUser(ctx context.Context, userID int) (*models.User, e
 	}
 	defer tx.Rollback()
 
-	// Use Where instead of Select for MVCC-aware query
 	results, err := tx.Where("users", "id", userID)
 	if err != nil || len(results) == 0 {
 		return nil, fmt.Errorf("user not found")

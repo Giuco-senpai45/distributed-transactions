@@ -289,13 +289,6 @@ func (tx *Transaction) Where(table string, where string, args ...any) ([]map[str
 	return results, nil
 }
 
-func (tx *Transaction) Select(table string, id int, data ...any) *Transaction {
-	_, err := tx.selectRecord(table, id, data...)
-	errs.ErrorCheck(err)
-
-	return tx
-}
-
 func makeQueryParams(min, max int) []string {
 	a := make([]string, max-min)
 	for i := range a {
