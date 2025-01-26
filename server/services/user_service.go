@@ -49,12 +49,25 @@ func (us *UserService) CreateUser(ctx context.Context, user *models.User) error 
 		return err
 	}
 
-	_, err = tx.Insert("users", []string{"username"}, user.Username)
+	// Check if username exists
+	existing, err := tx.Where("users", "username", user.Username)
+	if err != nil {
+		log.Error("Error checking username: %v", err)
+		tx.Rollback()
+		return err
+	}
+	if len(existing) > 0 {
+		tx.Rollback()
+		return fmt.Errorf("username already exists")
+	}
+
+	id, err := tx.Insert("users", []string{"username"}, user.Username)
 	if err != nil {
 		log.Error("Error inserting user: %v", err)
 		tx.Rollback()
 		return err
 	}
+	user.ID = id
 
 	err = tx.Commit()
 	if err != nil {

@@ -47,6 +47,10 @@ func (c *UserController) CreateUser(w http.ResponseWriter, r *http.Request) {
 
 	err = c.service.CreateUser(context.Background(), &user)
 	if err != nil {
+		if err.Error() == "username already exists" {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

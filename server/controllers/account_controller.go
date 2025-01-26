@@ -78,3 +78,26 @@ func (c *AccountController) Deposit(w http.ResponseWriter, r *http.Request) {
 
 	utils.WriteJSON(w, http.StatusOK, account)
 }
+
+func (c *AccountController) Transfer(w http.ResponseWriter, r *http.Request) {
+	log.Info("Controller: Transfer")
+	var req struct {
+		FromAccountID int `json:"from_account_id"`
+		ToAccountID   int `json:"to_account_id"`
+		Amount        int `json:"amount"`
+	}
+
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Invalid request payload", http.StatusBadRequest)
+		return
+	}
+
+	account, err := c.service.Transfer(context.Background(), req.FromAccountID, req.ToAccountID, req.Amount)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	utils.WriteJSON(w, http.StatusOK, account)
+}

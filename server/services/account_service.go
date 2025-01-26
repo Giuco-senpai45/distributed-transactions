@@ -120,3 +120,72 @@ func (as *AccountService) Deposit(ctx context.Context, accountID, amount int) (*
 	acc.Balance = newBalance
 	return &acc, nil
 }
+
+func (as *AccountService) Transfer(ctx context.Context, fromAccountID, toAccountID, amount int) (*Account, error) {
+	tx, err := as.mvccService.OpenTx(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// Get source account
+	fromAccounts, err := tx.Where("accounts", "id", fromAccountID)
+	if err != nil || len(fromAccounts) == 0 {
+		return nil, fmt.Errorf("source account not found")
+	}
+
+	// Get destination account
+	toAccounts, err := tx.Where("accounts", "id", toAccountID)
+	if err != nil || len(toAccounts) == 0 {
+		return nil, fmt.Errorf("destination account not found")
+	}
+
+	// Setup source account
+	fromAcc := Account{
+		ID:      fromAccountID,
+		UserID:  int(fromAccounts[0]["user_id"].(int64)),
+		Balance: int(fromAccounts[0]["balance"].(int64)),
+	}
+
+	// Setup destination account
+	toAcc := Account{
+		ID:      toAccountID,
+		UserID:  int(toAccounts[0]["user_id"].(int64)),
+		Balance: int(toAccounts[0]["balance"].(int64)),
+	}
+
+	// Check sufficient balance
+	if fromAcc.Balance < amount {
+		return nil, fmt.Errorf("insufficient balance")
+	}
+
+	// Update source account
+	err = tx.Update("accounts", fromAccountID,
+		[]string{"balance", "user_id"},
+		fromAcc.Balance-amount, fromAcc.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update destination account
+	err = tx.Update("accounts", toAccountID,
+		[]string{"balance", "user_id"},
+		toAcc.Balance+amount, toAcc.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create audit entry
+	_, err = tx.Insert("audit", []string{"timestamp", "operation", "user_id"},
+		time.Now(), "transfer", fromAcc.UserID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	fromAcc.Balance -= amount
+	return &fromAcc, nil
+}

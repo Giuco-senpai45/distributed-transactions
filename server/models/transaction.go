@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 type TransactionData struct {
@@ -22,11 +24,14 @@ type TransactionData struct {
 
 type Transaction struct {
 	TransactionData
-	records []Record
-	ctx     context.Context
+	records   []Record
+	ctx       context.Context
+	timestamp int64
 }
 
 var mu sync.Mutex
+
+const operationDelay = 800 * time.Millisecond
 
 // fetches transaction data
 func GetTx(ctx context.Context, txID int) (*TransactionData, error) {
@@ -44,18 +49,27 @@ func OpenTx(ctx context.Context) (*Transaction, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
+	timestamp := time.Now().UnixNano()
 	var id int
-	stmt := "INSERT INTO transactions (status) VALUES ($1) RETURNING id"
-	err := mvccConn.QueryRowContext(ctx, stmt, TxActive).Scan(&id)
-	errs.ErrorCheck(err)
+
+	stmt := "INSERT INTO transactions (status, timestamp) VALUES ($1, $2) RETURNING id"
+	err := mvccConn.QueryRowContext(ctx, stmt, TxActive, timestamp).Scan(&id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transaction: %v", err)
+	}
 
 	txData, err := GetTx(ctx, id)
-	errs.ErrorCheck(err)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get transaction data: %v", err)
+	}
 
 	tx := &Transaction{
 		TransactionData: *txData,
 		ctx:             ctx,
+		timestamp:       timestamp,
+		records:         make([]Record, 0),
 	}
+
 	return tx, nil
 }
 
@@ -81,8 +95,6 @@ func (tx *Transaction) IsRowVisible(row *RecordData) bool {
 
 // select specified record from table, check visibility and return record data
 func (tx *Transaction) selectRecord(table string, id int, data ...any) (*RecordData, error) {
-	log.Debug("Selecting record from %s with id %d", table, id)
-
 	rows, err := appConn.QueryContext(tx.ctx, "SELECT * FROM "+table+" WHERE id = $1", id)
 	if err != nil {
 		return nil, err
@@ -137,7 +149,6 @@ func (tx *Transaction) Where(table string, where string, args ...any) ([]map[str
             SELECT DISTINCT ON (id) *
             FROM ` + table
 
-	// Handle WHERE clause
 	if where != "" {
 		baseQuery += ` WHERE ` + where + ` = $2 AND `
 	} else {
@@ -152,7 +163,6 @@ func (tx *Transaction) Where(table string, where string, args ...any) ([]map[str
         )
         SELECT * FROM latest_versions`
 
-	// Prepare args
 	var queryArgs []interface{}
 	if len(args) > 0 {
 		queryArgs = make([]interface{}, len(args)+1)
@@ -162,10 +172,6 @@ func (tx *Transaction) Where(table string, where string, args ...any) ([]map[str
 		queryArgs = []interface{}{tx.ID}
 	}
 
-	log.Debug("Where query: %s", baseQuery)
-	log.Debug("Where args: %v", queryArgs)
-
-	// Execute query
 	rows, err := appConn.QueryContext(tx.ctx, baseQuery, queryArgs...)
 	if err != nil {
 		return nil, err
@@ -190,33 +196,25 @@ func (tx *Transaction) Where(table string, where string, args ...any) ([]map[str
 		}
 
 		base := RecordData{}
-		log.Debug("Processing row with columns: %v", cols)
 		for i, col := range cols {
 			sv := reflect.Indirect(reflect.ValueOf(row[i])).Elem()
 			switch col {
 			case "tx_min":
 				base.TxMin = int(sv.Int())
-				log.Debug("tx_min: %v", base.TxMin)
 			case "tx_max":
 				base.TxMax = int(sv.Int())
-				log.Debug("tx_max: %v", base.TxMax)
 			case "tx_min_committed":
 				base.TxMinCommitted = sv.Bool()
-				log.Debug("tx_min_committed: %v", base.TxMinCommitted)
 			case "tx_max_committed":
 				base.TxMaxCommitted = sv.Bool()
-				log.Debug("tx_max_committed: %v", base.TxMaxCommitted)
 			case "tx_min_rolled_back":
 				base.TxMinRolledBack = sv.Bool()
-				log.Debug("tx_min_rolled_back: %v", base.TxMinRolledBack)
 			case "tx_max_rolled_back":
 				base.TxMaxRolledBack = sv.Bool()
-				log.Debug("tx_max_rolled_back: %v", base.TxMaxRolledBack)
 			}
 		}
 
 		visible := tx.IsRowVisible(&base)
-		log.Debug("Row visibility for tx %d: %v", tx.ID, visible)
 
 		if visible {
 			result := make(map[string]interface{})
@@ -228,7 +226,6 @@ func (tx *Transaction) Where(table string, where string, args ...any) ([]map[str
 		}
 	}
 
-	log.Debug("Query returned %d visible results", len(results))
 	return results, nil
 }
 
@@ -249,6 +246,8 @@ func makeQueryParams(min, max int) []string {
 
 // insert new record into table, return record id
 func (tx *Transaction) Insert(table string, fields []string, values ...any) (int, error) {
+	time.Sleep(operationDelay)
+
 	var id int
 	seqName := table + "_id_seq"
 	err := appConn.QueryRowContext(tx.ctx, fmt.Sprintf("SELECT nextval('%s')", seqName)).Scan(&id)
@@ -256,7 +255,6 @@ func (tx *Transaction) Insert(table string, fields []string, values ...any) (int
 		return 0, err
 	}
 
-	// All required columns for MVCC
 	allFields := []string{
 		"id",
 		"tx_min",
@@ -268,27 +266,22 @@ func (tx *Transaction) Insert(table string, fields []string, values ...any) (int
 	}
 	allFields = append(allFields, fields...)
 
-	// Build INSERT statement
 	stmt := "INSERT INTO " + table + " ("
 	stmt += strings.Join(allFields, ", ")
 	stmt += ") VALUES ("
 	stmt += strings.Join(makeQueryParams(1, len(allFields)+1), ", ")
 	stmt += ")"
 
-	// Prepare all values including MVCC metadata
 	allValues := []interface{}{
-		id,    // id from sequence
-		tx.ID, // tx_min
-		0,     // tx_max
-		false, // tx_min_committed
-		false, // tx_max_committed
-		false, // tx_min_rolled_back
-		false, // tx_max_rolled_back
+		id,
+		tx.ID,
+		0,
+		false,
+		false,
+		false,
+		false,
 	}
 	allValues = append(allValues, values...)
-
-	log.Debug("Insert statement: %s", stmt)
-	log.Debug("Insert values: %v", allValues)
 
 	if _, err := appConn.ExecContext(tx.ctx, stmt, allValues...); err != nil {
 		return 0, fmt.Errorf("error inserting: %v", err)
@@ -300,16 +293,29 @@ func (tx *Transaction) Insert(table string, fields []string, values ...any) (int
 		Operation: OpInsert,
 	})
 
+	err = tx.Commit()
+	if err != nil {
+		return -1, err
+	}
+
 	return id, nil
 }
 
 func (tx *Transaction) Update(table string, id int, fields []string, values ...any) error {
-	// Get current version
-	stmt := `SELECT tx_min 
-            FROM ` + table + ` 
-            WHERE id = $1 
-            AND tx_max = 0 
-            ORDER BY tx_min DESC 
+	time.Sleep(operationDelay)
+
+	if err := tx.acquireLock(table, id, WriteLock); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to acquire lock: %v", err)
+	}
+
+	time.Sleep(operationDelay)
+
+	stmt := `SELECT tx_min
+            FROM ` + table + `
+            WHERE id = $1
+            AND tx_max = 0
+            ORDER BY tx_min DESC
             LIMIT 1`
 
 	var currentTxMin int
@@ -319,8 +325,8 @@ func (tx *Transaction) Update(table string, id int, fields []string, values ...a
 	}
 
 	// Mark current version as ended
-	updateStmt := `UPDATE ` + table + ` 
-                   SET tx_max = $1, tx_max_committed = FALSE 
+	updateStmt := `UPDATE ` + table + `
+                   SET tx_max = $1, tx_max_committed = FALSE
                    WHERE id = $2 AND tx_min = $3 AND tx_max = 0`
 	if _, err := appConn.ExecContext(tx.ctx, updateStmt, tx.ID, id, currentTxMin); err != nil {
 		return err
@@ -343,15 +349,14 @@ func (tx *Transaction) Update(table string, id int, fields []string, values ...a
 	stmt += strings.Join(params, ", ")
 	stmt += ")"
 
-	// Prepare values with MVCC metadata
 	insertValues := []interface{}{
-		id,    // same id
-		tx.ID, // new tx_min
-		0,     // tx_max (0 means active)
-		false, // tx_min_committed
-		false, // tx_max_committed
-		false, // tx_min_rolled_back
-		false, // tx_max_rolled_back
+		id,
+		tx.ID,
+		0,
+		false,
+		false,
+		false,
+		false,
 	}
 	insertValues = append(insertValues, values...)
 
@@ -365,10 +370,39 @@ func (tx *Transaction) Update(table string, id int, fields []string, values ...a
 		Operation: OpUpdate,
 	})
 
+	err = tx.Commit()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func (tx *Transaction) Delete(table string, id int) error {
+	time.Sleep(operationDelay)
+
+	if err := tx.acquireLock(table, id, WriteLock); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to acquire lock: %v", err)
+	}
+
+	time.Sleep(operationDelay)
+
+	var exists bool
+	err := appConn.QueryRowContext(tx.ctx,
+		"SELECT EXISTS(SELECT 1 FROM "+table+" WHERE id=$1)", id).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("record doesn't exist")
+	}
+
+	if err := tx.acquireLock(table, id, WriteLock); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to acquire lock: %v", err)
+	}
+
 	base, err := tx.selectRecord(table, id)
 	if err != nil {
 		return fmt.Errorf("failed to select record: %v", err)
@@ -378,57 +412,35 @@ func (tx *Transaction) Delete(table string, id int) error {
 		return fmt.Errorf("transaction %v aborted due to concurrency", tx.ID)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Check existing locks
-	var lockID int
-	row := mvccConn.QueryRowContext(tx.ctx,
-		"SELECT id FROM locks WHERE record_table=$1 AND record_id=$2",
-		table, id)
-
-	if err := row.Scan(&lockID); err == nil {
-		return fmt.Errorf("record already locked")
-	}
-
-	// Add resource dependency first
-	if err := tx.addResourceDependency(table, id); err != nil {
-		return fmt.Errorf("failed to add dependency: %v", err)
-	}
-
-	// Insert lock with correct parameter order
-	stmt := "INSERT INTO locks(record_table, record_id, txid) VALUES($1, $2, $3) RETURNING id"
-	if err := mvccConn.QueryRowContext(tx.ctx, stmt, table, id, tx.ID).Scan(&lockID); err != nil {
-		log.Error("Failed to insert lock: %v", err)
-		return err
-	}
-
-	// Add lock to zookeeper
-	if err := tx.addResourceLock(table, id); err != nil {
-		return fmt.Errorf("failed to add lock: %v", err)
-	}
-
-	// Mark record for deletion
-	updateStmt := `UPDATE ` + table + ` SET tx_max = $1, tx_max_rolled_back = FALSE 
+	updateStmt := `UPDATE ` + table + ` 
+                   SET tx_max = $1, tx_max_rolled_back = FALSE
                    WHERE tx_min = $2 AND id = $3`
 	if _, err := appConn.ExecContext(tx.ctx, updateStmt, tx.ID, base.TxMin, id); err != nil {
-		log.Error("Failed to mark for deletion: %v", err)
 		return err
 	}
 
-	// Record the operation
 	tx.records = append(tx.records, Record{
 		Table:     table,
 		ID:        id,
 		Operation: OpDelete,
-		LockID:    lockID,
 	})
 
-	log.Debug("Successfully marked record %d in table %s for deletion", id, table)
+	err = tx.Commit()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func (tx *Transaction) Commit() error {
+	defer func() {
+		mvccConn.ExecContext(tx.ctx,
+			"DELETE FROM locks WHERE txid = $1",
+			tx.ID)
+	}()
+	log.Info("Starting commit for transaction %d", tx.ID)
+
 	if err := tx.checkDependencyCycle(); err != nil {
 		return err
 	}
@@ -441,8 +453,8 @@ func (tx *Transaction) Commit() error {
 	for _, r := range tx.records {
 		switch r.Operation {
 		case OpDelete:
-			stmt := `UPDATE ` + r.Table + ` 
-                     SET tx_max_committed = TRUE 
+			stmt := `UPDATE ` + r.Table + `
+                     SET tx_max_committed = TRUE
                      WHERE id = $1 AND tx_max = $2`
 			_, err := appConn.ExecContext(tx.ctx, stmt, r.ID, tx.ID)
 			if err != nil {
@@ -450,8 +462,8 @@ func (tx *Transaction) Commit() error {
 				return err
 			}
 		case OpInsert, OpUpdate:
-			stmt := `UPDATE ` + r.Table + ` 
-                     SET tx_min_committed = TRUE 
+			stmt := `UPDATE ` + r.Table + `
+                     SET tx_min_committed = TRUE
                      WHERE id = $1 AND tx_min = $2`
 			_, err := appConn.ExecContext(tx.ctx, stmt, r.ID, tx.ID)
 			if err != nil {
@@ -461,8 +473,17 @@ func (tx *Transaction) Commit() error {
 		}
 	}
 
-	if err := tx.cleanupDependencies(); err != nil {
+	_, err = mvccConn.ExecContext(tx.ctx,
+		"DELETE FROM locks WHERE txid = $1",
+		tx.ID)
+	if err != nil {
 		t.Rollback()
+		return err
+	}
+
+	stmt := `UPDATE transactions SET status = $1 WHERE id = $2;`
+	_, err = mvccConn.ExecContext(tx.ctx, stmt, TxCommitted, tx.ID)
+	if err != nil {
 		return err
 	}
 
@@ -471,6 +492,9 @@ func (tx *Transaction) Commit() error {
 }
 
 func (tx *Transaction) Rollback() error {
+	if tx == nil {
+		return errors.New("attempt to rollback nil transaction")
+	}
 	if tx.Status == TxCommitted {
 		return nil
 	}
@@ -516,7 +540,11 @@ func (tx *Transaction) Rollback() error {
 }
 
 func Vacuum(ctx context.Context) (int, error) {
-	rows, err := mvccConn.QueryContext(ctx, "SELECT id FROM transactions WHERE status = 'active'")
+	// Get active transactions
+	rows, err := mvccConn.QueryContext(ctx, `
+        SELECT id, created_at, status 
+        FROM transactions 
+        WHERE status = 'active'`)
 	if err != nil {
 		return 0, err
 	}
@@ -531,23 +559,37 @@ func Vacuum(ctx context.Context) (int, error) {
 		activeTxs = append(activeTxs, tx)
 	}
 
-	tables, err := getTables(appConn)
-	if err != nil {
-		return 0, err
-	}
-
-	// fetch rows marked for deletion (inserted but rolled back, committed delete)
+	tables := []string{"users", "accounts", "audit"}
 	delCount := 0
+
 	for _, table := range tables {
-		rows, err = appConn.QueryContext(ctx, "SELECT tx_min, tx_max, id FROM"+table+" WHERE tx_max != 0 AND tx_max_committed = TRUE OR tx_min_rolled_back = TRUE")
+		rows, err = appConn.QueryContext(ctx, `
+        WITH duplicates AS (
+            SELECT id, 
+                   tx_min,
+                   tx_max,
+                   row_number() OVER (
+                       PARTITION BY id 
+                       ORDER BY tx_max DESC
+                   ) as rn
+            FROM `+table+`
+            WHERE tx_max_committed = true
+        )
+        SELECT d.id, d.tx_min, d.tx_max
+        FROM duplicates d
+        WHERE d.rn > 1`)
+
 		if err != nil {
 			return 0, err
 		}
-		defer rows.Close()
+
+		toDelete := make([]int, 0)
+		rowCount := 0
 
 		for rows.Next() {
+			rowCount++
 			var txMin, txMax, id int
-			if err := rows.Scan(&txMin, &txMax, &id); err != nil {
+			if err := rows.Scan(&id, &txMin, &txMax); err != nil {
 				return 0, err
 			}
 
@@ -560,17 +602,21 @@ func Vacuum(ctx context.Context) (int, error) {
 			}
 
 			if canBeDeleted {
-				_, err := appConn.ExecContext(ctx, "DELETE FROM "+table+" WHERE tx_min=$1 AND tx_max=$2 AND id=$3", txMin, txMax, id)
-				if err != nil {
-					return 0, err
-				}
-				delCount++
+				toDelete = append(toDelete, id)
 			}
 		}
-	}
 
-	if delCount > 0 {
-		log.Info("Vacuumed %d records", delCount)
+		log.Info("Found %d rows marked for deletion in table %s", rowCount, table)
+
+		if len(toDelete) > 0 {
+			query := fmt.Sprintf("DELETE FROM %s WHERE id = ANY($1)", table)
+			result, err := appConn.ExecContext(ctx, query, pq.Array(toDelete))
+			if err != nil {
+				return 0, err
+			}
+			count, _ := result.RowsAffected()
+			delCount += int(count)
+		}
 	}
 
 	return delCount, nil
@@ -578,66 +624,49 @@ func Vacuum(ctx context.Context) (int, error) {
 
 func getTables(conn *sql.DB) ([]string, error) {
 	rows, err := conn.Query(`
-	SELECT tablename
-	FROM pg_catalog.pg_tables
-	WHERE schemaname != 'pg_catalog'
-	AND schemaname != 'information_schema'
-	AND tablename != 'schema_migrations';`)
+    SELECT tablename
+    FROM pg_catalog.pg_tables
+    WHERE schemaname != 'pg_catalog'
+    AND schemaname != 'information_schema'
+    AND tablename != 'schema_migrations';`)
 	if err != nil {
-		return []string{}, err
+		return nil, fmt.Errorf("failed to query tables: %v", err)
 	}
 	defer rows.Close()
 
-	var tables []string
+	tables := make([]string, 0)
 	for rows.Next() {
-		var table string
-		err = rows.Scan(&table)
-		if err != nil {
-			return []string{}, err
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			return nil, fmt.Errorf("failed to scan table name: %v", err)
 		}
-		tables = append(tables, table)
+		tables = append(tables, tableName)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tables: %v", err)
+	}
+
+	if len(tables) == 0 {
+		log.Debug("No tables found in database")
+	} else {
+		log.Debug("Found tables: %v", tables)
 	}
 
 	return tables, nil
 }
 
-func (tx *Transaction) addResourceDependency(table string, id int) error {
-	// Create dependency path: root.dependencies.tx_{txid}.{table}_{id}
-	depPath := fmt.Sprintf("root.dependencies.tx_%d.%s_%d", tx.ID, table, id)
-
-	_, err := mvccConn.ExecContext(tx.ctx, `
-        INSERT INTO paths (path, type, name, dependency_type)
-        VALUES ($1, 'dependency', $2, 'target')`,
-		depPath, fmt.Sprintf("%s_%d", table, id),
-	)
-
-	return err
-}
-
-func (tx *Transaction) addResourceLock(table string, id int) error {
-	// Create lock path: root.locks.tx_{txid}.{table}_{id}
-	lockPath := fmt.Sprintf("root.locks.tx_%d.%s_%d", tx.ID, table, id)
-
-	_, err := mvccConn.ExecContext(tx.ctx, `
-        INSERT INTO paths (path, type, name, dependency_type)
-        VALUES ($1, 'lock', $2, 'source')`,
-		lockPath, fmt.Sprintf("%s_%d", table, id),
-	)
-
-	return err
-}
-
 func (tx *Transaction) checkDependencyCycle() error {
-	log.Debug("Starting dependency cycle check for transaction %d", tx.ID)
+	// log.Debug("Starting dependency cycle check for transaction %d", tx.ID)
 	rows, err := mvccConn.QueryContext(tx.ctx, `
         WITH RECURSIVE dependency_chain AS (
             SELECT path, 1 as depth
             FROM paths
             WHERE path <@ text2ltree('root.dependencies.tx_' || $1::text)
             AND dependency_type = 'target'
-            
+
             UNION ALL
-            
+
             SELECT p.path, dc.depth + 1
             FROM paths p
             JOIN dependency_chain dc ON p.path <@ dc.path
@@ -647,8 +676,8 @@ func (tx *Transaction) checkDependencyCycle() error {
         SELECT EXISTS (
             SELECT 1 FROM dependency_chain
             WHERE depth > (
-                SELECT COUNT(DISTINCT id) 
-                FROM transactions 
+                SELECT COUNT(DISTINCT id)
+                FROM transactions
                 WHERE status = 'active'
             )
         ) as has_cycle;`,
@@ -676,8 +705,8 @@ func (tx *Transaction) checkDependencyCycle() error {
 func (tx *Transaction) cleanupDependencies() error {
 	log.Debug("Cleaning up dependencies for transaction %d", tx.ID)
 	_, err := mvccConn.ExecContext(tx.ctx, `
-        DELETE FROM paths 
-        WHERE path <@ text2ltree('root.dependencies.tx_' || $1::text) 
+        DELETE FROM paths
+        WHERE path <@ text2ltree('root.dependencies.tx_' || $1::text)
         OR path <@ text2ltree('root.locks.tx_' || $1::text)`,
 		strconv.Itoa(tx.ID),
 	)

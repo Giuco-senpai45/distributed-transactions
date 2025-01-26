@@ -6,9 +6,10 @@ services:
     env_file:
       - ./postgres/.env
     ports:
-      - '5555:5432'
+      - "5555:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
 
   dt-server:
     container_name: dt-server

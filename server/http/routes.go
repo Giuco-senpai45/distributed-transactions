@@ -2,6 +2,8 @@ package routes
 
 import (
 	"dt/controllers"
+	"dt/models"
+	"fmt"
 	"net/http"
 )
 
@@ -14,7 +16,17 @@ func RegisterRoutes(router *http.ServeMux, userController *controllers.UserContr
 	router.HandleFunc("GET /accounts/{id}", accountController.ListAccounts)
 	router.HandleFunc("POST /accounts", accountController.CreateAccount)
 	router.HandleFunc("PATCH /accounts", accountController.Deposit)
+	router.HandleFunc("POST /accounts/transfer", accountController.Transfer)
 
 	router.HandleFunc("GET /audits", auditController.GetAudit)
 	router.HandleFunc("POST /audits", auditController.CreateAudit)
+
+	router.HandleFunc("POST /vacuum", func(w http.ResponseWriter, r *http.Request) {
+		count, err := models.Vacuum(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "Vacuumed %d records", count)
+	})
 }

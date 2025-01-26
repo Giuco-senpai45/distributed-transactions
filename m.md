@@ -70,3 +70,8 @@ a rollback mechanism discussed in the course (multiversions, rollback for each s
 a commit mechanism (can be thought together with rollback cell)
 a mechanism for detecting and solving deadlocks (graphs/conflict lists, etc.)
 - Attention:: The focus of the application must fall on the implementation of the transactional system, not on use cases, the web interface or frameworks you have used. You can use frameworks that make your work easier (e.g. Hibernate or other JPA, Spring, .NET MVC, etc.), but you must not use any kind of transactional support from them.
+
+Fa la tranzactie intre cont a si b sa stea o perioada sa ramana tranzactia activa,
+sa pot sa fac teste pe ea.
+
+Fa si niste frontend. Fa celalte cazuri de utilizare putin mai complexe (combina maybe login la user)
