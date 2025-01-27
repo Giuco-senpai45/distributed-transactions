@@ -1,16 +1,31 @@
 from locust import HttpUser, task, between, events
 import json
 import logging
+import threading
 
 class TransactionUser(HttpUser):
     host = "http://localhost:8080"
     wait_time = between(0.1, 0.5)
     accounts = []
+    user_count = 0
+    count_lock = threading.Lock()
+    
+    def get_next_user_number(self):
+        with self.count_lock:
+            current = TransactionUser.user_count
+            TransactionUser.user_count += 1
+            return current
     
     def on_start(self):
         try:
-            user1_id = self.create_user("user1")
-            user2_id = self.create_user("user2")
+            user_num1 = self.get_next_user_number()
+            user_num2 = self.get_next_user_number()
+            
+            user1_id = self.create_user(f"user{user_num1}")
+            user2_id = self.create_user(f"user{user_num2}")
+            
+            logging.info(f"Created users: user{user_num1}, user{user_num2}")
+            
             if not user1_id or not user2_id:
                 logging.error("Failed to create users")
                 return
@@ -28,11 +43,10 @@ class TransactionUser(HttpUser):
             if not self.deposit(account2_id, 100):
                 logging.error(f"Failed to deposit to account {account2_id}")
 
-            logging.info(f"Setup complete. Accounts: {self.accounts}")
-            
         except Exception as e:
-            logging.error(f"Setup failed: {str(e)}")
-
+            logging.error(f"Error in on_start: {e}")
+    
+    
     def create_user(self, username):
         try:
             response = self.client.post("/users", 

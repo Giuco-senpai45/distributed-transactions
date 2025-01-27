@@ -24,6 +24,32 @@ func (tx *Transaction) acquireLock(table string, id int, lockType LockType) erro
 	// Add logging to debug
 	log.Debug("Attempting to acquire lock for table: %s, id: %d, tx: %d", table, id, tx.ID)
 
+	if id == -1 {
+		var existingLockTx int
+		err := mvccConn.QueryRowContext(tx.ctx, `
+            SELECT txid 
+            FROM locks 
+            WHERE record_table = $1 AND record_id = -1`,
+			table).Scan(&existingLockTx)
+
+		if err == nil {
+			log.Debug("Table lock exists, adding dependency from tx %d to tx %d", tx.ID, existingLockTx)
+			if err := tx.addDependency(existingLockTx); err != nil {
+				return err
+			}
+			time.Sleep(operationDelay)
+			return tx.acquireLock(table, id, lockType)
+		}
+
+		// Create new table lock
+		log.Debug("Creating new table lock for tx %d", tx.ID)
+		_, err = mvccConn.ExecContext(tx.ctx, `
+            INSERT INTO locks (record_table, record_id, txid, shared)
+            VALUES ($1, -1, $2, $3)`,
+			table, tx.ID, lockType == ReadLock)
+		return err
+	}
+
 	// First check if lock exists
 	var existingLock Lock
 	err := mvccConn.QueryRowContext(tx.ctx, `

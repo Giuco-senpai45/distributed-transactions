@@ -31,7 +31,7 @@ type Transaction struct {
 
 var mu sync.Mutex
 
-const operationDelay = 300 * time.Millisecond
+const operationDelay = 200 * time.Millisecond
 
 // fetches transaction data
 func GetTx(ctx context.Context, txID int) (*TransactionData, error) {
@@ -299,6 +299,11 @@ func makeQueryParams(min, max int) []string {
 
 // insert new record into table, return record id
 func (tx *Transaction) Insert(table string, fields []string, values ...any) (int, error) {
+	if err := tx.acquireLock(table, -1, WriteLock); err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("failed to acquire table lock: %v", err)
+	}
+
 	time.Sleep(operationDelay)
 
 	var id int
@@ -361,9 +366,14 @@ func (tx *Transaction) Update(table string, id int, fields []string, values ...a
 
 	time.Sleep(operationDelay)
 
-	if err := tx.acquireLock(table, id, WriteLock); err != nil {
+	if err := tx.acquireLock(table, -1, WriteLock); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to acquire lock: %v", err)
+	}
+
+	if err := tx.acquireLock(table, id, WriteLock); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to acquire record lock: %v", err)
 	}
 
 	time.Sleep(operationDelay)
@@ -438,12 +448,10 @@ func (tx *Transaction) Update(table string, id int, fields []string, values ...a
 func (tx *Transaction) Delete(table string, id int) error {
 	time.Sleep(operationDelay)
 
-	if err := tx.acquireLock(table, id, WriteLock); err != nil {
+	if err := tx.acquireLock(table, -1, WriteLock); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("failed to acquire lock: %v", err)
 	}
-
-	time.Sleep(operationDelay)
 
 	var exists bool
 	err := appConn.QueryRowContext(tx.ctx,
@@ -459,6 +467,8 @@ func (tx *Transaction) Delete(table string, id int) error {
 		tx.Rollback()
 		return fmt.Errorf("failed to acquire lock: %v", err)
 	}
+
+	time.Sleep(operationDelay)
 
 	base, err := tx.selectRecord(table, id)
 	if err != nil {
